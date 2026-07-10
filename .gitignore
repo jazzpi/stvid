@@ -7,3 +7,7 @@ settings.json
 
 # Configuration files
 *.ini
+
+# Common virtualenv names
+.venv/
+env/
