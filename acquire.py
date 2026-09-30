@@ -10,18 +10,45 @@ from astropy.coordinates import EarthLocation
 from astropy.time import Time
 from astropy.io import fits
 import astropy.units as u
-from stvid.utils import get_sunset_and_sunrise
+from stvid.utils import observe_logic
 import logging
 import configparser
 import argparse
 
+def setup_logging(path):
+    logFormatter = logging.Formatter(
+        "%(asctime)s [%(processName)-12.12s] [%(levelname)-5.5s] %(message)s"
+    )
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    logger.setLevel(logging.DEBUG)
 
+    fileHandler = logging.FileHandler(os.path.join(path, "acquire.log"))
+    fileHandler.setFormatter(logFormatter)
+    logger.addHandler(fileHandler)
+
+    consoleHandler = logging.StreamHandler(sys.stdout)
+    consoleHandler.setFormatter(logFormatter)
+    logger.addHandler(consoleHandler)
+
+    return logger
 
 # Capture images from pi
-def capture_pi(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, cfg):
+def capture_pi(image_queue, z1base, t1base, z2base, t2base, nx, ny, nz, tend, device_id, live, conf_file):
+    global logger
+    logger = setup_logging(os.getcwd())
+
+    cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    cfg.read(conf_file)
+    
     # Use the Picamera2 lib
     from picamera2 import Picamera2
 
+    z1 = np.ctypeslib.as_array(z1base.get_obj()).reshape(ny, nx, nz)
+    t1 = np.ctypeslib.as_array(t1base.get_obj())
+    z2 = np.ctypeslib.as_array(z2base.get_obj()).reshape(ny, nx, nz)
+    t2 = np.ctypeslib.as_array(t2base.get_obj())
+    
     # Intialization
     first = True
     slow_CPU = False
@@ -168,13 +195,28 @@ def capture_pi(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, c
 
 
 # Capture images from cv2
-def capture_cv2(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, cfg):
+def capture_cv2(image_queue, z1base, t1base, z2base, t2base, nx, ny, nz, tend, device_id, live, conf_file):
+    global logger
+    logger = setup_logging(os.getcwd())
+
+    cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    cfg.read(conf_file)
+
+    z1 = np.ctypeslib.as_array(z1base.get_obj()).reshape(ny, nx, nz)
+    t1 = np.ctypeslib.as_array(t1base.get_obj())
+    z2 = np.ctypeslib.as_array(z2base.get_obj()).reshape(ny, nx, nz)
+    t2 = np.ctypeslib.as_array(t2base.get_obj())
+    
     # Intialization
+    camera_type  = "CV2"
     first = True
     slow_CPU = False
 
     # Initialize cv2 device
-    device = cv2.VideoCapture(device_id)
+    if cfg.has_option(camera_type, "device_string"):
+        device = cv2.VideoCapture(cfg.get(camera_type, "device_string"))
+    else:
+        device = cv2.VideoCapture(device_id)
 
     # Test for software binning
     try:
@@ -258,8 +300,19 @@ def capture_cv2(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, 
 
 
 # Capture images
-def capture_asi(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, cfg):
+def capture_asi(image_queue, z1base, t1base, z2base, t2base, nx, ny, nz, tend, device_id, live, conf_file):
+    global logger
+    logger = setup_logging(os.getcwd())
+
+    cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    cfg.read(conf_file)
+    
     import zwoasi as asi
+
+    z1 = np.ctypeslib.as_array(z1base.get_obj()).reshape(ny, nx, nz)
+    t1 = np.ctypeslib.as_array(t1base.get_obj())
+    z2 = np.ctypeslib.as_array(z2base.get_obj()).reshape(ny, nx, nz)
+    t2 = np.ctypeslib.as_array(t2base.get_obj())
     
     first    = True  # Array flag
     slow_CPU = False # Performance issue flag
@@ -358,9 +411,12 @@ def capture_asi(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, 
                 slow_CPU = False
 
             # Get settings
-            settings = camera.get_control_values()
-            gain = settings["Gain"]
-            temp = settings["Temperature"] / 10
+            try:
+                settings = camera.get_control_values()
+                gain = settings["Gain"]
+                temp = settings["Temperature"] / 10
+            except:
+                gain, temp = 0, 0
             logger.info("Capturing frame with gain %d, temperature %.1f" % (gain, temp))
 
             # Set gain
@@ -421,7 +477,7 @@ def capture_asi(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, device_id, live, 
         camera.close()
 
 
-def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg):
+def compress(image_queue, z1base, t1base, z2base, t2base, nx, ny, nz, tend, path, device_id, conf_file):
     """ compress: Aggregate nframes of observations into a single FITS file, with statistics.
 
         ImageHDU[0]: mean pixel value nframes         (zmax)
@@ -431,6 +487,17 @@ def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg
 
     Also updates a [observations_path]/control/state.txt for interfacing with satttools/runsched and sattools/slewto
     """
+    global logger
+    logger = setup_logging(os.getcwd())
+
+    cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    cfg.read(conf_file)
+
+    z1 = np.ctypeslib.as_array(z1base.get_obj()).reshape(ny, nx, nz)
+    t1 = np.ctypeslib.as_array(t1base.get_obj())
+    z2 = np.ctypeslib.as_array(z2base.get_obj()).reshape(ny, nx, nz)
+    t2 = np.ctypeslib.as_array(t2base.get_obj())
+    
     # Force a restart
     controlpath = os.path.join(path, "control")
     if not os.path.exists(controlpath):
@@ -442,7 +509,7 @@ def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg
     if not os.path.exists(os.path.join(controlpath, "position.txt")):
         with open(os.path.join(controlpath, "position.txt"), "w") as fp:
             fp.write("\n")
-                          
+            
     with open(os.path.join(controlpath, "state.txt"), "w") as fp:
         fp.write("restart\n")
 
@@ -483,11 +550,15 @@ def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg
                     fp.write(line)
 
             # Wait for completed capture buffer to become available
-            while (image_queue.qsize == 0):
+            while image_queue.empty():
                 time.sleep(0.1)
                 
             # Get next buffer # from the work queue
-            proc_buffer = image_queue.get()
+            try:
+                proc_buffer = image_queue.get(timeout=60)
+            except:
+                logger.debug("Queue timed out")
+                break
             logger.debug("Processing buffer %d" % proc_buffer)
 
             # Log start time
@@ -503,7 +574,7 @@ def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg
 
             # Format time
             nfd = "%s.%03d" % (time.strftime("%Y-%m-%dT%T",
-                            time.gmtime(t[0])), int((t[0] - np.floor(t[0])) * 1000))
+                                             time.gmtime(t[0])), int((t[0] - np.floor(t[0])) * 1000))
             t0 = Time(nfd, format="isot")
             dt = t - t[0]
 
@@ -566,7 +637,7 @@ def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg
 
             # Write fits file
             hdu = fits.PrimaryHDU(data=np.array([zavg, zstd, zmax, znum]),
-                                header=hdr)
+                                  header=hdr)
             hdu.writeto(os.path.join(filepath, ftemp))
             os.rename(os.path.join(filepath, ftemp), os.path.join(filepath, fname))
 
@@ -589,7 +660,8 @@ def compress(image_queue, z1, t1, z2, t2, nx, ny, nz, tend, path, device_id, cfg
 
 # Main function
 if __name__ == '__main__':
-
+    multiprocessing.set_start_method("spawn", force=True)
+    
     # Read commandline options
     conf_parser = argparse.ArgumentParser(description="Capture and compress" +
                                                       " live video frames.")
@@ -681,34 +753,36 @@ if __name__ == '__main__':
         refalt_set  = cfg.getfloat("Setup", "alt_sunset") * u.deg
         refalt_rise = cfg.getfloat("Setup", "alt_sunrise") * u.deg
 
-        # FIXME: The following will fail without internet access
-        #        due to failure to download finals2000A.all
-        # Get sunrise and sunset times
-        state, tset, trise = get_sunset_and_sunrise(tnow, loc, refalt_set, refalt_rise)
+        # Aimpoint configuration
+        if cfg.has_section("Aimpoint"):
+            aimpoint_az = cfg.getfloat("Aimpoint", "az_deg") * u.deg
+            aimpoint_alt = cfg.getfloat("Aimpoint", "alt_deg") * u.deg
+            aimpoint_height = cfg.getfloat("Aimpoint", "height_km") * u.km
+        else:
+            aimpoint_az, aimpoint_alt, aimpoint_height = None, None, None
 
-        # Start/end logic
-        if state == "sun never rises":
-            logger.info("The sun never rises. Exiting program.")
-            sys.exit()
-        elif state == "sun never sets":
-            logger.info("The sun never sets.")
-            tend = tnow + 24 * u.h
-        elif (trise < tset):
-            logger.info("The sun is below the horizon.")
-            tend = trise
-        elif (trise >= tset):
-            dt = np.floor((tset - tnow).to(u.s).value)
-            logger.info("The sun is above the horizon. Sunset at %s."
-                        % tset.isot)
-            logger.info("Waiting %.0f seconds." % dt)
-            tend = trise
+        # Get logic
+        action, wait_time, tend, state = observe_logic(tnow, loc, refalt_set, refalt_rise,
+                                                       aimpoint_az, aimpoint_alt, aimpoint_height)
+
+        # Wait for observation start
+        logger.info(state)
+        if action == "wait":
+            logger.info(f"Waiting for {wait_time:.0f} seconds.")
             try:
-                time.sleep(dt)
+                time.sleep(wait_time)
             except KeyboardInterrupt:
                 sys.exit()
     else:
         tend = tnow + test_duration * u.s
 
+    # Read shutter config
+    if cfg.has_section("Shutter"):
+        from stvid.shutter import Shutter
+        shutter = Shutter(cfg.getint("Shutter", "pin"))
+    else:
+        shutter = None
+        
     logger.info("Starting data acquisition")
     logger.info("Acquisition will end after "+tend.isot)
 
@@ -719,49 +793,65 @@ if __name__ == '__main__':
 
     # Initialize arrays
     z1base = multiprocessing.Array(ctypes.c_uint8, nx * ny * nz)
-    z1 = np.ctypeslib.as_array(z1base.get_obj()).reshape(ny, nx, nz)
     t1base = multiprocessing.Array(ctypes.c_double, nz)
-    t1 = np.ctypeslib.as_array(t1base.get_obj())
     z2base = multiprocessing.Array(ctypes.c_uint8, nx * ny * nz)
-    z2 = np.ctypeslib.as_array(z2base.get_obj()).reshape(ny, nx, nz)
     t2base = multiprocessing.Array(ctypes.c_double, nz)
-    t2 = np.ctypeslib.as_array(t2base.get_obj())
 
     image_queue = multiprocessing.Queue()
 
     # Set processes
     pcompress = multiprocessing.Process(target=compress,
-                                        args=(image_queue, z1, t1, z2, t2, nx, ny,
-                                              nz, tend.unix, path, device_id, cfg))
+                                        name="compress",
+                                        args=(image_queue,
+                                              z1base, t1base, z2base, t2base,
+                                              nx, ny, nz, tend.unix,
+                                              path, device_id, conf_file))
     if camera_type == "PI":
         pcapture = multiprocessing.Process(target=capture_pi,
-                                           args=(image_queue, z1, t1, z2, t2,
-                                                 nx, ny, nz, tend.unix, device_id, live, cfg))
+                                           name="capture_pi",
+                                           args=(image_queue,
+                                                 z1base, t1base, z2base, t2base,
+                                                 nx, ny, nz, tend.unix,
+                                                 device_id, live, conf_file))
     elif camera_type == "CV2":
         pcapture = multiprocessing.Process(target=capture_cv2,
-                                           args=(image_queue, z1, t1, z2, t2,
-                                                 nx, ny, nz, tend.unix, device_id, live, cfg))
+                                           name="capture_cv2",
+                                           args=(image_queue,
+                                                 z1base, t1base, z2base, t2base,
+                                                 nx, ny, nz, tend.unix,
+                                                 device_id, live, conf_file))
     elif camera_type == "ASI":
         pcapture = multiprocessing.Process(target=capture_asi,
-                                           args=(image_queue, z1, t1, z2, t2,
-                                                 nx, ny, nz, tend.unix, device_id, live, cfg))
+                                           name="capture_asi",
+                                           args=(image_queue,
+                                                 z1base, t1base, z2base, t2base,
+                                                 nx, ny, nz, tend.unix,
+                                                 device_id, live, conf_file))
 
-    # Start
-    pcapture.start()
-    pcompress.start()
-
-    # End
     try:
-        pcapture.join()
-        pcompress.join()
-    except (KeyboardInterrupt, ValueError):
-        time.sleep(0.1) # Allow a little time for a graceful exit
-    except MemoryError as e:
-        logger.error("Memory error %s" % e)
-    finally:
-        pcapture.terminate()
-        pcompress.terminate()
+        # Open shutter
+        if shutter:
+            shutter.open()
+        
+        # Start
+        pcapture.start()
+        pcompress.start()
 
-    # Release device
-    if live is True:
-        cv2.destroyAllWindows()
+        # End
+        try:
+            pcapture.join()
+            pcompress.join()
+        except (KeyboardInterrupt, ValueError):
+            time.sleep(0.1) # Allow a little time for a graceful exit
+        except MemoryError as e:
+            logger.error("Memory error %s" % e)
+        finally:
+            pcapture.terminate()
+            pcompress.terminate()
+
+        # Release device
+        if live is True:
+            cv2.destroyAllWindows()
+    finally:
+        if shutter:
+            shutter.close()

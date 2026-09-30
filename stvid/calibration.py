@@ -190,7 +190,7 @@ def calibrate(fname, cfg, astcat, pixcat, wref, tref):
         dra = (t.sidereal_time("mean", "greenwich") - tref.sidereal_time("mean", "greenwich"))
 
         # Updated position
-        p = FK5(ra=pref.ra + dra, dec=pref.dec, equinox=t).transform_to(ICRS)
+        p = SkyCoord(ra=pref.ra + dra, dec=pref.dec, equinox=t, frame="fk5").transform_to(ICRS)
         w.wcs.crval = np.array([p.ra.degree, p.dec.degree])
 
     # Exit on empty star catalog
@@ -240,6 +240,10 @@ def calibrate(fname, cfg, astcat, pixcat, wref, tref):
     # Store flags
     pixcat.flag = c
 
+    # Copy PC to CD if CD absent
+    if not w.wcs.has_cd():
+        w.wcs.cd = w.wcs.pc
+    
     # CTYPE
     if order > 1:
         ctype1, ctype2 = "RA---TAN-SIP", "DEC--TAN-SIP"

@@ -24,6 +24,12 @@ from stvid.fourframe import AstrometricCatalog
 
 from astropy.utils.exceptions import AstropyWarning
 
+def file_age(fname):
+    tnow = datetime.datetime.now()
+    tfile = datetime.datetime.fromtimestamp(os.path.getctime(fname))
+
+    return tnow - tfile
+
 def number_to_letter(n):
     # 
     if n == 0:
@@ -48,11 +54,13 @@ def chunk_list(l, n):
         o.append(l[i:i + n])
     return o
 
-def process_loop(fname):
+def process_loop(args):
     """
     Thread to process satobs FourFrame FITS files in a multi-thread compatible manner
     """
 
+    fname, cfg, acat, wref, tref, abbrevs, tlefiles, nstarsmin = args
+    
     # File root
     froot = os.path.splitext(fname)[0]
     
@@ -167,7 +175,7 @@ def process_loop(fname):
 
         
     # Store output
-    if ident_dicts is not []:
+    if ident_dicts:
         output_dict["satellites"] = ident_dicts
 
         with open(f"{ff.froot}_data.json", "w") as fp:
@@ -240,8 +248,12 @@ if __name__ == "__main__":
                              "--wait",
                              help="Delay before processing new files (seconds, default: 10).",
                              type=int, default=10)
+    conf_parser.add_argument("-m",
+                             "--max-wait",
+                             help="Maximum wait time before exiting (seconds, default: 60).",
+                             type=int, default=60)
     args = conf_parser.parse_args()
-    
+
     # Read configuration file
     cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ":"))
     conf_file = args.conf_file if args.conf_file else "configuration.ini"
@@ -282,6 +294,9 @@ if __name__ == "__main__":
         froots = [os.path.splitext(fitsname)[0] for fitsname in fitsfnames]
         fnames = [f"{froot}.fits" for froot in froots if not os.path.exists(f"{froot}_stars.cat")]
 
+        # Randomize file order
+        np.random.shuffle(fnames)
+        
         # Create reference calibration file
         calfname = os.path.join(args.file_dir, "test.fits")
         if not os.path.exists(calfname):
@@ -314,7 +329,14 @@ if __name__ == "__main__":
         if solved:
             print("Calibration succeeded!")
             break
-            
+
+        # Break when age exceeded
+        fitsfnames = sorted(glob.glob(os.path.join(args.file_dir, "2*.fits")))
+        if len(fnames) == 0 and file_age(fitsfnames[-1]) > datetime.timedelta(seconds=args.max_wait):
+            print(f"No new files for {args.max_wait} seconds. Exiting calibration loop.")
+            solved = False
+            break
+        
         try:
             if(args.batch):
                 sys.exit()
@@ -323,6 +345,11 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             sys.exit()
 
+    # Exit if calibration failed
+    if not solved:
+        print("Calibration failed. Exiting.")
+        sys.exit()
+            
     # Get number of CPUs for multiprocessing
     if not args.cpu_count:
         if cfg.has_option("LineDetection", "cpu_count"):
@@ -338,7 +365,7 @@ if __name__ == "__main__":
         # Get unprocessed files
         fitsfnames = sorted(glob.glob(os.path.join(args.file_dir, "2*.fits")))
         froots = [os.path.splitext(fitsname)[0] for fitsname in fitsfnames]
-        fnames = [f"{froot}.fits" for froot in froots if not os.path.exists(f"{froot}_0.png")]
+        fnames = [f"{froot}.fits" for froot in froots if not os.path.exists(f"{froot}_0.png")][:100]
 
         # Process files
         p = mp.Pool(processes=cpu_count)
@@ -346,7 +373,21 @@ if __name__ == "__main__":
         try:
             chunks = chunk_list(fnames, cpu_count)
             for chunk in chunks:
-                for result in p.map(process_loop, chunk):
+                work = [
+                    (
+                        fname,
+                        cfg,
+                        acat,
+                        wref,
+                        tref,
+                        abbrevs,
+                        tlefiles,
+                        nstarsmin,
+                    )
+                    for fname in chunk
+                ]
+
+                for result in p.map(process_loop, work):
                     (screenoutput, screenoutput_idents) = result
 
                     if screenoutput is not None:
@@ -360,6 +401,11 @@ if __name__ == "__main__":
             p.close()
             p.join()
 
+        # Break when age exceeded
+        if len(fitsfnames) > 0 and file_age(fitsfnames[-1]) > datetime.timedelta(seconds=args.max_wait):
+            print(f"No new files for {args.max_wait} seconds. Exiting processing loop.")
+            break
+            
         # Sleep
         try:
             if(args.batch):
