@@ -68,9 +68,12 @@ def capture_pi(image_queue, z1base, t1base, z2base, t2base, nx, ny, nz, tend, de
     #print('Select sensor mode 1 [0]')
     #sensor_mode = picam2.sensor_modes[0]
 
-    # full FOV. 
-    print('Select sensor mode 3 [2]')
-    sensor_mode = picam2.sensor_modes[2]
+    # Full FOV, 2x2 binned. Select by properties since the mode list differs
+    # between Pi models. 12-bit, because in the 10-bit mode the ISP clips a
+    # dark sky background to zero.
+    sensor_mode = next(m for m in sensor_modes
+                       if m["size"] == (2028, 1520) and m["bit_depth"] == 12)
+    print('Selected sensor mode:', sensor_mode)
 
     print('SENSORMODES')
     """
@@ -85,7 +88,7 @@ def capture_pi(image_queue, z1base, t1base, z2base, t2base, nx, ny, nz, tend, de
     Select sensor mode 1 [0]
     SENSORMODES
 
-    The crop limits are interesting. Select one which starts with 0, 0, and a small size. This is the third one. Set it as [2] as we count from 0.
+    The crop limits are interesting. Select one which starts with 0, 0, and a small size: 2028x1520.
     
     """
     
