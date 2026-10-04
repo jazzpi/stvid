@@ -4,6 +4,15 @@
 # IDE files
 *~
 settings.json
+*.swp
 
 # Configuration files
 *.ini
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Log files
+*.log
