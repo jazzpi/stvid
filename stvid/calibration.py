@@ -157,6 +157,11 @@ def read_calibration(fname):
 
     return w, t
 
+def write_calibration(fname, w, t):
+    hdr = w.to_header()
+    hdr["MJD-OBS"] = t.mjd
+    fits.PrimaryHDU(header=hdr).writeto(fname, overwrite=True, output_verify="ignore")
+
 def calibrate(fname, cfg, astcat, pixcat, wref, tref):
     # Read FITS
     hdu = fits.open(fname)

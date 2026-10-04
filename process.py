@@ -72,18 +72,22 @@ def process_loop(args):
 
     # Calibrate
     screenoutput = None
+    new_ref = None
     if not os.path.exists(f"{froot}_calib.wcs"):
         w, rmsx, rmsy, nused, is_calibrated = calibration.calibrate(fname, cfg, acat, scat, wref, tref)
 
         # Attempt plate solve
-#        if not is_calibrated and scat.nstars > nstarsmin:
-#            print(colored(f"Computing astrometric calibration for {fname}", "yellow"))
-#            wtmp, ttmp = calibration.plate_solve(fname, cfg, calfname)
-            
-#            # Retry calibration
-#            if wtmp is not None:
-#                wref, tref = wtmp, ttmp
-#                w, rmsx, rmsy, nused, is_calibrated = calibration.calibrate(fname, cfg, acat, scat, wref, tref)
+        resolve = cfg.getboolean("Astrometry", "plate_solve_on_failure", fallback=False)
+        if resolve and not is_calibrated and scat.nstars > nstarsmin:
+            print(colored(f"Computing astrometric calibration for {fname}", "yellow"))
+            # Returned rather than stored, as other workers may be solving concurrently
+            wtmp, ttmp = calibration.plate_solve(fname, cfg)
+
+            # Retry calibration
+            if wtmp is not None:
+                w, rmsx, rmsy, nused, is_calibrated = calibration.calibrate(fname, cfg, acat, scat, wtmp, ttmp)
+                if is_calibrated:
+                    new_ref = (wtmp, ttmp)
 
         # Log output
         output = f"{os.path.basename(fname)} {w.wcs.crval[0]:10.6f} {w.wcs.crval[1]:10.6f} {rmsx:6.2f} {rmsy:6.2f} {nused}/{scat.nstars}"
@@ -95,7 +99,7 @@ def process_loop(args):
 
     # Skip if png exists
     if os.path.exists(f"{froot}_0.png"):
-        return
+        return (screenoutput, [], new_ref)
         
     # Read Fourframe
     ff = FourFrame(fname, cfg)
@@ -212,7 +216,7 @@ def process_loop(args):
     for o in obs:
         del o
         
-    return (screenoutput, screenoutput_idents)
+    return (screenoutput, screenoutput_idents, new_ref)
 
 if __name__ == "__main__":
     # Read commandline options
@@ -387,13 +391,25 @@ if __name__ == "__main__":
                     for fname in chunk
                 ]
 
+                new_refs = []
                 for result in p.map(process_loop, work):
-                    (screenoutput, screenoutput_idents) = result
+                    (screenoutput, screenoutput_idents, new_ref) = result
 
                     if screenoutput is not None:
                         print(screenoutput)
                     for screenoutput_ident in screenoutput_idents:
                         print(screenoutput_ident)
+
+                    if new_ref is not None:
+                        new_refs.append(new_ref)
+
+                if new_refs:
+                    # Calibration failed and new plate solve was needed. Probably camera drift.
+                    # Update the reference for future frames. Files are processed in time order,
+                    # so the latest solve is the best reference even if it predates the current one.
+                    wref, tref = max(new_refs, key=lambda ref: ref[1])
+                    calibration.write_calibration(calfname, wref, tref)
+                    print(colored(f"Updated reference calibration to {tref.isot}", "yellow"))
 
             p.close()
             p.join()
