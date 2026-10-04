@@ -2,12 +2,12 @@
 from __future__ import print_function
 import glob
 import numpy as np
-from stvid.fourframe import FourFrame
 import configparser
 import argparse
 import os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from astropy.io import fits
 from astropy.time import Time
 
 
@@ -27,12 +27,17 @@ def generate_keogram(path):
         if i % 10 == 0:
             print(i, fname)
 
-        # Read file
-        ff = FourFrame(fname, cfg)
+        # Read file -- we don't use `FourFrame` here to avoid reading the
+        # entire .fits
+        hdu = fits.open(fname, memmap=True, denywrite=True)
+        mjd = hdu[0].header["MJD-OBS"]
+        zavg = hdu[0].data[0]
 
         # Extract data
-        keogram[:, i] = ff.zavg[:, ixmid]
-        mjds[i] = ff.mjd
+        keogram[:, i] = zavg[:, ixmid]
+        mjds[i] = mjd
+
+        hdu.close()
 
     # Save npy arrays
     np.save(os.path.join(path, "mjds"), mjds)
